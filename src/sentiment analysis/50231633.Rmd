@@ -1,0 +1,369 @@
+---
+title: "Analysing sentiment patterns on mainstream movies."
+author: "Miguel Javier Garrido Aguarón"
+date: "18/06/2024"
+output:
+    html_document:
+        code_folding: show
+        fig_caption: yes
+---
+
+```{r setup, include=FALSE}
+library(readr)
+library(tidytext)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+```
+
+
+# Executive summary
+
+In this report various research questions will be tried to be answered:
+
+Do mainstream movies follow any kind of sentiment pattern?
+
+Is there a difference in pattern or sentiment between most popular and least popular movies?
+
+It is no surprise that movie industry moves lots of money. With that one would think that they thought about every single detail and that even sentiment pattern would matter in the making of a movie. The aim of this project is to explore that and to see what differs popular movies from not so popular movies.
+
+
+# Data background
+
+The dataset used for this project is a csv created by merging together two different datasets. First a dataset was created scraping all the movie scripts from [IMDSB](https://imsdb.com/) and storing them into a csv file with the fields "ID", "Title" and "Script". Being ID an int to identify each movie and "Title" and "Script" the titles and script of each movie respectively.
+Then through a Python script that dataset was merged with the [TMDB 5000 Movie Dataset](https://www.kaggle.com/datasets/tmdb/tmdb-movie-metadata?select=tmdb_5000_movies.csv) from the plarform [Kaggle](https://www.kaggle.com/). 
+
+The resulting csv file contains 629 rows with the following fields:
+
+title: The name of the movie. Example: "10 Things I Hate About You."
+
+script: The full text of the movie script, including dialogue and descriptions. Example: "Ten Things I Hate About You by Karen McCullah Lutz, Kirsten Smith..."
+
+vote_average: The average rating given to the movie by viewers, typically on a scale from 0 to 10. Example: 7.5.
+
+genre: The category or type of the movie, such as comedy, drama, or action. Example: "Romantic Comedy."
+
+popularity: A measure of how popular the movie is, often based on views, likes, and other metrics. Example: 35.6.
+
+
+
+# Data loading, cleaning and preprocessing
+
+### Load the CSV file
+```{r}
+movies_df <- read_csv("merged_movies.csv")
+
+```
+
+
+### Remove rows with missing values
+```{r}
+movies_df <- na.omit(movies_df)
+```
+
+
+### Load sentiment lexicons
+For this project three sentiment analysis lexicons will be used: "bing", "nrc" and "afinn"
+```{r}
+bing <- get_sentiments("bing")
+nrc <- get_sentiments("nrc") %>% filter(sentiment %in% c("positive", "negative"))
+afinn <- get_sentiments("afinn") %>% rename(score = value) %>%
+  mutate(sentiment = ifelse(score > 0, "positive", "negative"))
+```
+
+
+
+### Combine lexicons into one dataset
+For obtaining the best understanding possible of sentiment trends, an approach combining the three different sentiment lexicons will be used. Here we are storing the three lexicons together.
+```{r}
+combined_lexicon <- bind_rows(
+  bing %>% mutate(score = ifelse(sentiment == "positive", 1, -1)),
+  nrc %>% mutate(score = ifelse(sentiment == "positive", 1, -1)),
+  afinn %>% select(word, sentiment, score)
+)
+```
+
+
+### Tokenize the script and remove stop words.
+Tokenize the script, meaning breaking down the text into individual units called tokens, which can be words, phrases, or symbols and removing stop words which are common words like "and," "the," "is," etc., and carry minimal meaningful information.
+
+
+```{r}
+movies_data <- movies_df %>%
+  unnest_tokens(word, script) %>%
+  anti_join(stop_words, by = "word")
+```
+
+
+### Group by movies and create parts for analysis. 
+Each script is separated in parts for better understanding of sentiment evolution throughout the movies. Scripts are divided into proportional parts for better analysis. The scripts will be divided into 100 different parts.
+
+```{r}
+movies_data <- movies_data %>%
+  group_by(title) %>%
+  mutate(total_words = n(),
+         part_size = ceiling(total_words / 100),
+         part = ceiling(row_number() / part_size))
+```
+
+
+# Text data analysis
+
+
+### Perform sentiment analysis per part using combined lexicons.
+The average score of the three lexicons is calculated. NaN values are ignored, if any.
+```{r, message=FALSE, warning=FALSE}
+sentiment_analysis_combined <- movies_data %>%
+  inner_join(combined_lexicon, by = "word") %>%
+  group_by(title, part) %>%
+  summarize(avg_sentiment_score = mean(score, na.rm = TRUE)) %>%
+  ungroup()
+```
+
+
+# Individual analysis and figures
+## Anaysis and Figure 1: Sentiment score distribution per genre.
+### Split genres into separate rows and merge with sentiment analysis
+Since a movie can have different genres and they are all separated by a ',', we separate the rows and merge with the sentiment analysis the following way.
+```{r, message=FALSE, warning=FALSE}
+movies_data_genres <- movies_df %>%
+  separate_rows(genre, sep = ", ") %>%
+  left_join(sentiment_analysis_combined, by = "title")
+```
+
+### Plot average sentiment score distribution by genre
+The first thing observed to proceed with the analysis is the sentiment distribution across genres. For this a box plot was used, a box plot will tell us this distribution and by plotting all genres distribution next to each other we can observe patterns and take decisions based on that.
+```{r, warning=FALSE}
+ggplot(movies_data_genres, aes(x = genre, y = avg_sentiment_score, fill = genre)) +
+  geom_boxplot() +
+  labs(title = "Average Sentiment Score Distribution by Genre", x = "Genre", y = "Average Sentiment Score") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+mean(movies_data_genres$avg_sentiment_score, na.rm = TRUE)
+```
+
+In this case we can observe all genres share a similar distribution. This means the mean sentiment score of all movies can be calculated to later on classify movies as more positive or negative. This couldn't be done if genres had diverse sentiment score distribution.
+We can also see that the average sentiment score is "-0.1782001". So we can label anything higher than that as positive and anything lower as negative.
+
+
+## Anaysis and Figure 2: Sentiment analysis per genre over time.
+
+### Perform sentiment analysis by genre over time.
+We want to know how sentiment scores evolution over time per genre. For this we need to calculate the average sentiment score of all movies by part and by genre.
+"na.rm = TRUE" will ignore, if there are any, all NaN values in the data.
+
+```{r, message=FALSE, warning=FALSE}
+sentiment_analysis_genres <- movies_data_genres %>%
+  group_by(title, genre, part) %>%
+  summarize(avg_sentiment_score = mean(avg_sentiment_score, na.rm = TRUE)) %>%
+  ungroup()
+```
+
+
+
+### Summarize sentiment scores by genre and part
+This helps calculate the average sentiment score per parts by genre, since we are not interested in specific movies.
+```{r, message=FALSE, warning=FALSE}
+genre_sentiment_trend <- sentiment_analysis_genres %>%
+  group_by(genre, part) %>%
+  summarize(avg_sentiment = mean(avg_sentiment_score, na.rm = TRUE)) %>%
+  ungroup()
+```
+
+
+
+### Plot the sentiment trend over time for each genre
+For this a line graph was chosen for better understanding of sentiment evolution across movie parts. 
+"facet_wrap" facets the plot into multiple panels, arranged in x columns with independent y-axis scales.
+```{r}
+ggplot(genre_sentiment_trend, aes(x = part, y = avg_sentiment)) +
+  geom_line() +
+  facet_wrap(~ genre, ncol = 2, scales = "free_y") +
+  labs(title = "Sentiment Trend Over Time for Each Genre (Averaged Lexicons)", x = "Part", y = "Average Sentiment Score") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+
+With this graph we can observe that all movies independently of its genre follow the same sentiment patterns. Sentiment starts overall more positive and starts declining in a linear fashion with spikes of positiveness and negativeness, then at the end it spikes in a positive fashion.
+
+For observing this in more detail we are going to make this plot individually for each genre so we can see the plot with more detail.
+
+## Analysis and Figures from 3 to 19
+A graph is going to be plotted for each genre individually. Same as figure 2, but one figure per genre to see the details.
+```{r, warning=FALSE}
+# Generate plots for each genre separately
+unique_genres <- unique(genre_sentiment_trend$genre)
+
+
+# Loop through each genre and create individual plots
+for (genre in unique_genres) {
+  genre_data <- genre_sentiment_trend %>% filter(genre == !!genre)
+  
+  p <- ggplot(genre_data, aes(x = part, y = avg_sentiment)) +
+    geom_line() +
+    labs(title = paste("Sentiment Trend Over Time for Genre:", genre), 
+         x = "Part", 
+         y = "Average Sentiment Score") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+  # Print the plot in the RMarkdown output
+  print(p)
+}
+
+```
+
+
+With this plot we can observe even more the downwards tendency movies have and the positive spike at the end. We can see mainstream movies follow a sentiment pattern independently of their genre.
+
+
+
+## Anaysis and Figures 3 from 20 to 35
+In this analysis and figures the sentiment score across time for each genre is going to be plotted. Each plot represents one genre, in the same plot we will have two line graphs, one will represent the average sentiment score across time for the top 10 most popular movies and the other for the bottom 10.
+
+### Function for movie filtering
+This function extracts the top 10 and bottom 10 movies based on popularity within a specific genre.
+```{r}
+
+# Function to calculate top and bottom movies by genre
+get_top_bottom_movies <- function(df, genre) {
+  genre_movies <- df %>% filter(genre == !!genre)
+  
+  if (nrow(genre_movies) < 10) return(NULL) # Not enough movies to consider
+  
+  top_10_movies <- genre_movies %>% 
+    arrange(desc(popularity)) %>% 
+    slice(1:10) %>% 
+    pull(title)
+  
+  bottom_10_movies <- genre_movies %>% 
+    arrange(popularity) %>% 
+    slice(1:10) %>% 
+    pull(title)
+  
+  list(top_10 = top_10_movies, bottom_10 = bottom_10_movies)
+}
+
+
+# Create a data frame to store the average sentiment scores
+average_sentiment_scores <- data.frame(
+  Genre = character(),
+  Group = character(),
+  Average_Sentiment = numeric(),
+  stringsAsFactors = FALSE
+)
+```
+
+
+We are now going to iterate over each genre and filter movies by genre. We will filter again to only have the top and bottom movies by popularity to identify the top 10 and bottom 10 movies based on their popularity within the filtered movies of the current genre. Filter sentiment analysis data for the movies identified and check if available just in case. Summarize sentiment scores calculating the average and plotting a graph per genre.
+The output will be one plot per genre showing the evolution of sentiment scores for the top 10 most popular and bottom 10 least popular movies within each genre. Also a straight line is shown demostrating the average sentiment score for these top or bottom 10.
+```{r}
+# Iterate over each genre
+for (genre in unique_genres) {
+  movies_by_genre <- movies_df %>% separate_rows(genre, sep = ", ") %>% filter(genre == !!genre)
+  
+  # Get the top 10 and bottom 10 movies by popularity
+  top_bottom_movies <- get_top_bottom_movies(movies_by_genre, genre)
+  
+  if (is.null(top_bottom_movies)) next # Skip genres with fewer than 10 movies
+  
+  top_10_movies <- top_bottom_movies$top_10
+  bottom_10_movies <- top_bottom_movies$bottom_10
+  
+  # Filter sentiment analysis data for top and bottom movies
+  filtered_sentiment_analysis <- sentiment_analysis_combined %>%
+    filter(title %in% c(top_10_movies, bottom_10_movies))
+  
+  # Check if there are sentiment data for these movies
+  if (nrow(filtered_sentiment_analysis) == 0) next
+  
+  # Summarize sentiment scores for top 10 and bottom 10 movies
+  top_10_sentiment <- filtered_sentiment_analysis %>%
+    filter(title %in% top_10_movies) %>%
+    group_by(part) %>%
+    summarize(avg_sentiment = mean(avg_sentiment_score, na.rm = TRUE), .groups = 'drop') %>%
+    mutate(group = "Top 10 Movies")
+  
+  bottom_10_sentiment <- filtered_sentiment_analysis %>%
+    filter(title %in% bottom_10_movies) %>%
+    group_by(part) %>%
+    summarize(avg_sentiment = mean(avg_sentiment_score, na.rm = TRUE), .groups = 'drop') %>%
+    mutate(group = "Bottom 10 Movies")
+  
+  # Combine the summarized data
+  summarized_sentiment <- bind_rows(top_10_sentiment, bottom_10_sentiment)
+  
+  # Calculate the average sentiment for top 10 and bottom 10 movies
+  avg_top_10_sentiment <- mean(top_10_sentiment$avg_sentiment, na.rm = TRUE)
+  avg_bottom_10_sentiment <- mean(bottom_10_sentiment$avg_sentiment, na.rm = TRUE)
+  
+  # Append the results to the data frame
+  average_sentiment_scores <- rbind(
+    average_sentiment_scores,
+    data.frame(Genre = genre, Group = "Top 10 Movies", Average_Sentiment = avg_top_10_sentiment),
+    data.frame(Genre = genre, Group = "Bottom 10 Movies", Average_Sentiment = avg_bottom_10_sentiment)
+  )
+  
+  # Plot the comparison of sentiment analysis
+  p <- ggplot(summarized_sentiment, aes(x = part, y = avg_sentiment, color = group)) +
+    geom_line() +
+    geom_hline(yintercept = avg_top_10_sentiment, linetype = "dashed", color = "blue") +
+    geom_hline(yintercept = avg_bottom_10_sentiment, linetype = "dashed", color = "red") +
+    labs(title = paste("Comparison Top 10 and Bottom 10 Most Popular Movies in:", genre),
+         x = "Part", y = "Average Sentiment Score") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    annotate("text", x = max(summarized_sentiment$part), y = avg_top_10_sentiment, label = "Avg Top 10", vjust = -1, hjust = 1, color = "blue") +
+    annotate("text", x = max(summarized_sentiment$part), y = avg_bottom_10_sentiment, label = "Avg Bottom 10", vjust = -1, hjust = 1, color = "red")
+  
+  # Print the plot in the RMarkdown output
+  print(p)
+}
+
+# Print the average sentiment scores
+print(average_sentiment_scores)
+
+```
+### Genre individual analysis.
+
+Action: Popular movies have more overall more positive sentiments.
+
+Adventure: Popular movies have more overall more positive sentiments.
+
+Animation: Popular movies have more overall more positive sentiments.
+
+Comedy: Popular movies have more overall more positive sentiments.
+
+Crime: Indifferent, huge sudden change in sentiments independent on popularity. Least popular movies have a huge positive spike at the end compared to most popular movies.
+
+Drama: Popular movies have more more overall negative sentiments.
+
+Family: Popular movies have more more overall positive sentiments.
+
+Fantasy: Popular movies have more more overall positive sentiments.
+
+History: Popular movies have more more overall negative sentiments.
+
+Horror: Popular movies have more more overall negative sentiments.
+
+Music: Popular movies have more more overall negative sentiments.
+
+Mystery: Indifferent. Popular movies have a way higher positive ending.
+
+Romance: Popular movies have more more overall positive sentiments.
+
+Science fiction: Popular movies have more more overall positive sentiments.
+
+Thriller: Popular movies have more more overall negative sentiments.
+
+War: Popular movies have more more overall negative sentiments.
+
+
+# Conclusion 
+
+We could observe how mainstream movies do indeed follow a sentiment pattern across the movie. This pattern is independent from the genre of the movie and it consists of a slowly decaying of sentiment score, so the more advanced the movie the more negative the sentiments are and at the end of the movie a huge rise in positive sentiments.
+
+On the other hand, a sentiment analysis per movie genre was done. We could observe per each movie genre how popular movies differ from least popular movies in the average sentiment across the movie. We could also see a pattern were, movies that could be considered of a more positive fashion were more popular as they had higher positive scores. These are movies of the genres like "comedy", "family", "romance", "fantasy", "animation", etc. On the other hand we saw how movies considered more negative by the general population had a better performance in popularity as their sentiment scores were lower. These are movies of the genres like "horror", "thriller", "history". Also was seen that some movie genres like "crime" depend more on the arrangement of these sentiments across the movie and the pattern rather that the whole sentiment score. The only movie genre which didn't fall in this pattern mentioned was "music", where one could expect to perform better in popularity with higher sentiment scores, but the opposite was observed.
+
